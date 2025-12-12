@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base href="/">
+    <meta charset="UTF-8">
+    <meta name="description" content="Orchestrator prototype UI">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orchestrator Prototype</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#3949ab">
+    <script defer src="flutter.js"></script>
+  </head>
+  <body>
+    <script>
+      window.addEventListener('load', function () {
+        _flutter.loader
+          .loadEntrypoint({
+            entrypointUrl: 'main.dart.js',
+            onEntrypointLoaded: function (engineInitializer) {
+              engineInitializer.initializeEngine().then(function (appRunner) {
+                appRunner.runApp();
+              });
+            },
+          })
+          .catch(function (err) {
+            console.error('Failed to load Flutter entrypoint:', err);
+          });
+      });
+    </script>
+  </body>
+</html>

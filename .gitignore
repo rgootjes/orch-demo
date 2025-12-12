@@ -1,0 +1,32 @@
+# Flutter/Dart/Pub related
+**/doc/api/
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.manifest
+.pub-cache/
+.pub/
+/coverage/
+.dart_tools/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code related
+.vscode/
+
+# Flutter/Dart specific cache
+.ios/
+.android/
+.macos/
+.linux/
+.windows/
+web/.dart_tool/
+
+# Others
+pubspec.lock
