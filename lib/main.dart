@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const OrchestratorApp());
@@ -46,20 +50,18 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
   bool _isGenerating = false;
   String _statusMessage = 'Idle';
   late List<AgentStatus> _agents;
+  String? _jobId;
+  Timer? _pollingTimer;
 
-  final Map<String, String> _generatedFiles = <String, String>{
-    '/products/ProductController.cs': '''using Microsoft.AspNetCore.Mvc;\n\n[ApiController]\n[Route("api/[controller]")]\npublic class ProductController : ControllerBase {\n    // CRUD endpoints go here\n}''',
-    '/products/ProductModel.cs': '''public class Product {\n    public int Id { get; set; }\n    public string Name { get; set; } = string.Empty;\n    public decimal Price { get; set; }\n;}''',
-    '/products/README.md': '''# Products Feature\n\nGenerated API feature for managing products including routes and tests.''',
-  };
-
-  late String _selectedFile;
+  Map<String, String> _generatedFiles = <String, String>{};
+  String? _selectedFile;
+  String? _architecture;
+  String? _review;
 
   @override
   void initState() {
     super.initState();
     _agents = _initialAgents();
-    _selectedFile = _generatedFiles.keys.first;
   }
 
   List<AgentStatus> _initialAgents() {
@@ -76,58 +78,186 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
       return;
     }
 
+    _stopPolling();
+
     setState(() {
       _isGenerating = true;
-      _statusMessage = 'Working...';
+      _statusMessage = 'Starting...';
       _agents = _initialAgents();
+      _jobId = null;
+      _generatedFiles = <String, String>{};
+      _selectedFile = null;
+      _architecture = null;
+      _review = null;
     });
 
-    await _runWorkflow();
+    try {
+      final Uri url = Uri.parse('http://localhost:8000/generate-feature');
+      final http.Response response = await http.post(
+        url,
+        headers: <String, String>{'Content-Type': 'application/json'},
+        body: jsonEncode(<String, String>{
+          'description': _featureController.text.trim(),
+        }),
+      );
 
-    if (!mounted) {
-      return;
+      if (response.statusCode != 200) {
+        throw Exception('Failed to start generation: ${response.body}');
+      }
+
+      final Map<String, dynamic> decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final String? jobId = decoded['jobId'] as String?;
+
+      if (jobId == null) {
+        throw Exception('Missing jobId in response');
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _jobId = jobId;
+        _statusMessage = 'Working...';
+      });
+
+      _startPolling();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isGenerating = false;
+        _statusMessage = 'Failed to start: $error';
+      });
     }
-
-    setState(() {
-      _isGenerating = false;
-      _statusMessage = 'Idle';
-    });
-  }
-
-  Future<void> _runWorkflow() async {
-    const Duration stepDelay = Duration(milliseconds: 900);
-    await _updateAgent(0, AgentState.running);
-    await Future<void>.delayed(stepDelay);
-    await _updateAgent(0, AgentState.complete);
-    await _updateAgent(1, AgentState.running);
-
-    await Future<void>.delayed(stepDelay);
-    await _updateAgent(1, AgentState.complete);
-    await _updateAgent(2, AgentState.running);
-
-    await Future<void>.delayed(stepDelay);
-    await _updateAgent(2, AgentState.complete);
-    await _updateAgent(3, AgentState.running);
-
-    await Future<void>.delayed(stepDelay);
-    await _updateAgent(3, AgentState.complete);
-  }
-
-  Future<void> _updateAgent(int index, AgentState state) async {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _agents[index] = AgentStatus(_agents[index].name, state);
-    });
   }
 
   @override
   void dispose() {
     _featureController.dispose();
+    _stopPolling();
     super.dispose();
   }
+
+  void _startPolling() {
+    if (_jobId == null) {
+      return;
+    }
+
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) => _fetchStatus());
+    _fetchStatus();
+  }
+
+  void _stopPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = null;
+  }
+
+  Future<void> _fetchStatus() async {
+    if (_jobId == null) {
+      return;
+    }
+
+    try {
+      final Uri url = Uri.parse('http://localhost:8000/status/$_jobId');
+      final http.Response response = await http.get(url);
+
+      if (response.statusCode != 200) {
+        throw Exception('Failed to fetch status: ${response.body}');
+      }
+
+      final Map<String, dynamic> decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) {
+        return;
+      }
+
+      _applyStatus(decoded);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage = 'Error polling: $error';
+        _isGenerating = false;
+      });
+      _stopPolling();
+    }
+  }
+
+  void _applyStatus(Map<String, dynamic> status) {
+    final Map<String, dynamic> steps =
+        (status['steps'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+    final List<AgentStatus> updatedAgents = _workflowOrder
+        .map(
+          (MapEntry<String, String> step) => AgentStatus(
+            step.value,
+            _mapState(steps[step.key] as String?),
+          ),
+        )
+        .toList();
+
+    final Map<String, String> files = <String, String>{};
+    final List<dynamic>? returnedFiles = status['files'] as List<dynamic>?;
+    if (returnedFiles != null) {
+      for (final dynamic file in returnedFiles) {
+        if (file is Map<String, dynamic>) {
+          final String? path = file['path'] as String?;
+          final String? content = file['content'] as String?;
+          if (path != null && content != null) {
+            files[path] = content;
+          }
+        }
+      }
+    }
+
+    final Map<String, dynamic>? architecture = status['architecture'] as Map<String, dynamic>?;
+    final String? review = status['review'] as String?;
+
+    setState(() {
+      _agents = updatedAgents;
+      _statusMessage = status['status'] == 'complete' ? 'Complete' : 'Working...';
+      _architecture = architecture == null
+          ? null
+          : const JsonEncoder.withIndent('  ').convert(architecture);
+      _review = review;
+
+      if (files.isNotEmpty) {
+        _generatedFiles = files;
+        if (_selectedFile == null || !_generatedFiles.containsKey(_selectedFile)) {
+          _selectedFile = _generatedFiles.keys.first;
+        }
+      }
+
+      if (status['status'] == 'complete') {
+        _isGenerating = false;
+        _stopPolling();
+      }
+    });
+  }
+
+  AgentState _mapState(String? value) {
+    switch (value) {
+      case 'running':
+        return AgentState.running;
+      case 'complete':
+        return AgentState.complete;
+      case 'error':
+        return AgentState.error;
+      default:
+        return AgentState.pending;
+    }
+  }
+
+  static const List<MapEntry<String, String>> _workflowOrder = <MapEntry<String, String>>[
+    MapEntry<String, String>('architect', 'Architect Agent'),
+    MapEntry<String, String>('backend', 'Backend Agent'),
+    MapEntry<String, String>('integration', 'Integration Agent'),
+    MapEntry<String, String>('review', 'Reviewer Agent'),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -333,22 +463,24 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
   }
 
   Widget _buildArchitectureTab(BuildContext context) {
-    const String architectureSummary = '''Feature: Products\nModel: Product (id, name, price)\nAPI: GET /products, POST /products, PUT /products/{id}, DELETE /products/{id}''';
-
     return _PanelContainer(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(12),
-        child: SelectableText(
-          architectureSummary,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.5,
+        child: _architecture == null
+            ? const Text('Architecture will appear here once available.')
+            : SelectableText(
+                _architecture!,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      height: 1.5,
+                    ),
               ),
-        ),
       ),
     );
   }
 
   Widget _buildCodeTab(BuildContext context) {
+    final bool hasFiles = _generatedFiles.isNotEmpty;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -360,11 +492,14 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
         ),
         const SizedBox(height: 8),
         DropdownButton<String>(
-          value: _selectedFile,
-          onChanged: (String? value) {
-            if (value == null) return;
-            setState(() => _selectedFile = value);
-          },
+          value: hasFiles ? _selectedFile : null,
+          hint: const Text('No files yet'),
+          onChanged: hasFiles
+              ? (String? value) {
+                  if (value == null) return;
+                  setState(() => _selectedFile = value);
+                }
+              : null,
           items: _generatedFiles.keys
               .map(
                 (String path) => DropdownMenuItem<String>(
@@ -379,10 +514,12 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
           child: _PanelContainer(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(12),
-              child: SelectableText(
-                _generatedFiles[_selectedFile] ?? '',
-                style: const TextStyle(fontFamily: 'monospace'),
-              ),
+              child: hasFiles
+                  ? SelectableText(
+                      _generatedFiles[_selectedFile] ?? '',
+                      style: const TextStyle(fontFamily: 'monospace'),
+                    )
+                  : const Text('Files will be shown when the run is complete.'),
             ),
           ),
         ),
@@ -391,31 +528,19 @@ class _OrchestratorPageState extends State<OrchestratorPage> {
   }
 
   Widget _buildReviewTab(BuildContext context) {
-    const List<String> comments = <String>[
-      'Code structure looks clean.',
-      'API endpoints correctly match the spec.',
-      'Consider adding validation to the POST endpoint.',
-    ];
-
     return _PanelContainer(
-      child: ListView.separated(
+      child: Padding(
         padding: const EdgeInsets.all(12),
-        itemBuilder: (BuildContext context, int index) {
-          final bool isWarning = index == 2;
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Icon(
-                isWarning ? Icons.warning_amber : Icons.check_circle,
-                color: isWarning ? Colors.amber[700] : Colors.green,
+        child: _review == null
+            ? const Text('Reviewer feedback will appear here once available.')
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Icon(Icons.comment, color: Colors.blueAccent),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(_review!)),
+                ],
               ),
-              const SizedBox(width: 8),
-              Expanded(child: Text(comments[index])),
-            ],
-          );
-        },
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemCount: comments.length,
       ),
     );
   }
