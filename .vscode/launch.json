@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Mock Server",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "mock_server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ],
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
+    },
+    {
+      "name": "Flutter Web",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "flutterMode": "debug",
+      "args": [
+        "-d",
+        "chrome",
+        "--web-port",
+        "8080"
+      ]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Run Mock Server + Flutter Web",
+      "configurations": [
+        "Mock Server",
+        "Flutter Web"
+      ]
+    }
+  ]
+}
